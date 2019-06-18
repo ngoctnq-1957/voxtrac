@@ -56,10 +56,15 @@ model = load_model('vox.hdf5')
 
 data_dir = '/home/tran.ngo.quang.ngoc/Downloads/MIR-1K_for_MIREX/Wavfile/'
 sample_rate, fmat = wavread(data_dir+'abjones_1_01.wav')
+# sample_rate, fmat = wavread(data_dir+'abjones_2_02.wav')
+
 master = fmat[:,0] * .5 + fmat[:,1] * .5
+vocal = fmat[:,1]
 master_pow, master_phase = pcm2stft(master)
 
 predicted = model.predict(master_pow[np.newaxis,:,:513,:])
-wavwrite('test_orig.wav', sample_rate, master)
-wavwrite('test.wav', sample_rate, stft2pcm(predicted[0,:,:,:],
-    master_phase[:,:predicted.shape[2],:]))
+audio_out = stft2pcm(predicted[0,:,:,:], master_phase[:,:predicted.shape[2],:])
+print(np.max(audio_out))
+wavwrite('eval/output.wav', sample_rate, audio_out/np.max(audio_out))
+wavwrite('eval/mixed.wav', sample_rate, master/np.max(master))
+wavwrite('eval/vocal.wav', sample_rate, vocal/np.max(vocal))

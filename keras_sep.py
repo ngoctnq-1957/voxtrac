@@ -6,11 +6,13 @@ warnings.filterwarnings('ignore')
 # %% imports
 import keras
 from keras.layers import Input, SeparableConv2D, LeakyReLU, Dropout, \
-        UpSampling2D, Concatenate, Cropping2D, MaxPooling2D, ZeroPadding2D
+        UpSampling2D, Concatenate, Cropping2D, MaxPooling2D, ZeroPadding2D, \
+        BatchNormalization
 from keras.models import Model
-from keras.optimizers import RMSprop
+from keras.optimizers import RMSprop, Adam
 from keras.callbacks import LearningRateScheduler, EarlyStopping, ModelCheckpoint
-import os
+from keras.utils import plot_model, print_summary
+import os, sys
 import random
 import operator
 import numpy as np
@@ -68,7 +70,8 @@ def wavread(fname):
     rate, data = wavread_orig(fname)
     if data.dtype != np.float32:
         data = data / (np.iinfo(data.dtype).max + 1)
-    return rate, data
+    # don't go vanishing on me
+    return rate, data * 2**10
 
 # %% building the model
 relu_rate = .2
@@ -78,42 +81,117 @@ channel = 1
 stft_len = 513
 
 main_input = Input(shape=(513,stft_len,channel), dtype='float32', name='audio_input')
-# 2 convolutional layers, ends with a dropout
-x = SeparableConv2D(filters=2, kernel_size=5)(main_input)
+# convolution 1
+x = SeparableConv2D(filters=2, kernel_size=3)(main_input)
 x = LeakyReLU(alpha=relu_rate)(x)
-x = SeparableConv2D(filters=4, kernel_size=5)(x)
+x = SeparableConv2D(filters=4, kernel_size=3)(x)
 x = LeakyReLU(alpha=relu_rate)(x)
-skip = Dropout(rate=drop_rate)(x)
+x = BatchNormalization()(x)
+skip1 = Dropout(rate=drop_rate)(x)
+print('skip1', skip1)
 
 # Pooling
-x = MaxPooling2D(pool_size=3, strides=2)(skip)
+x = MaxPooling2D(pool_size=5, strides=2)(skip1)
+print('pool1', x)
 
-# 2 more convolutions
-x = SeparableConv2D(filters=4, kernel_size=5)(x)
+# convolution 2
+x = SeparableConv2D(filters=8, kernel_size=3)(x)
 x = LeakyReLU(alpha=relu_rate)(x)
-x = SeparableConv2D(filters=4, kernel_size=5)(x)
+x = SeparableConv2D(filters=16, kernel_size=3)(x)
 x = LeakyReLU(alpha=relu_rate)(x)
-x = Dropout(rate=drop_rate)(x)
+x = BatchNormalization()(x)
+skip2 = Dropout(rate=drop_rate)(x)
+print('skip2', skip2)
 
-# upsample
+# Pooling
+x = MaxPooling2D(pool_size=5, strides=2)(skip2)
+print('pool2', x)
+
+# convolution 3
+x = SeparableConv2D(filters=32, kernel_size=3)(x)
+x = LeakyReLU(alpha=relu_rate)(x)
+x = SeparableConv2D(filters=64, kernel_size=3)(x)
+x = LeakyReLU(alpha=relu_rate)(x)
+x = BatchNormalization()(x)
+skip3 = Dropout(rate=drop_rate)(x)
+print('skip3', skip3)
+
+# Pooling
+x = MaxPooling2D(pool_size=5, strides=2)(skip3)
+print('pool3', x)
+
+# bottom layer, do not expand
+x = SeparableConv2D(filters=64, kernel_size=3)(x)
+x = LeakyReLU(alpha=relu_rate)(x)
+x = SeparableConv2D(filters=64, kernel_size=3)(x)
+x = LeakyReLU(alpha=relu_rate)(x)
+x = BatchNormalization()(x)
+print('preblow', x)
+
+# upsample 3
 x = UpSampling2D(size=2)(x)
 # padding -- skip is larger than x
-left_pad = (skip.shape[1] - x.shape[1]) // 2
-right_pad = skip.shape[1] - x.shape[1] - left_pad
-up_pad = (skip.shape[2] - x.shape[2]) // 2
-down_pad = skip.shape[2] - x.shape[2] - up_pad
+left_pad = (skip3.shape[1] - x.shape[1]) // 2
+right_pad = skip3.shape[1] - x.shape[1] - left_pad
+up_pad = (skip3.shape[2] - x.shape[2]) // 2
+down_pad = skip3.shape[2] - x.shape[2] - up_pad
 left_pad = int(left_pad)
 right_pad = int(right_pad)
 up_pad = int(up_pad)
 down_pad = int(down_pad)
 
-crop = Cropping2D(((left_pad, right_pad), (up_pad, down_pad)))(skip)
+crop = Cropping2D(((left_pad, right_pad), (up_pad, down_pad)))(skip3)
 x = Concatenate(axis=-1)([x, crop])
 # and convolve
-x = SeparableConv2D(filters=2, kernel_size=5)(x)
+x = SeparableConv2D(filters=32, kernel_size=3)(x)
 x = LeakyReLU(alpha=relu_rate)(x)
-x = SeparableConv2D(filters=1, kernel_size=5)(x)
+x = SeparableConv2D(filters=16, kernel_size=3)(x)
 x = LeakyReLU(alpha=relu_rate)(x)
+x = BatchNormalization()(x)
+print('zoom3', x)
+
+# upsample 2
+x = UpSampling2D(size=2)(x)
+# padding -- skip is larger than x
+left_pad = (skip2.shape[1] - x.shape[1]) // 2
+right_pad = skip2.shape[1] - x.shape[1] - left_pad
+up_pad = (skip2.shape[2] - x.shape[2]) // 2
+down_pad = skip2.shape[2] - x.shape[2] - up_pad
+left_pad = int(left_pad)
+right_pad = int(right_pad)
+up_pad = int(up_pad)
+down_pad = int(down_pad)
+
+crop = Cropping2D(((left_pad, right_pad), (up_pad, down_pad)))(skip2)
+x = Concatenate(axis=-1)([x, crop])
+# and convolve
+x = SeparableConv2D(filters=8, kernel_size=3)(x)
+x = LeakyReLU(alpha=relu_rate)(x)
+x = SeparableConv2D(filters=4, kernel_size=3)(x)
+x = LeakyReLU(alpha=relu_rate)(x)
+x = BatchNormalization()(x)
+print('zoom2', x)
+
+# upsample 1
+x = UpSampling2D(size=2)(x)
+# padding -- skip is larger than x
+left_pad = (skip1.shape[1] - x.shape[1]) // 2
+right_pad = skip1.shape[1] - x.shape[1] - left_pad
+up_pad = (skip1.shape[2] - x.shape[2]) // 2
+down_pad = skip1.shape[2] - x.shape[2] - up_pad
+left_pad = int(left_pad)
+right_pad = int(right_pad)
+up_pad = int(up_pad)
+down_pad = int(down_pad)
+
+crop = Cropping2D(((left_pad, right_pad), (up_pad, down_pad)))(skip1)
+x = Concatenate(axis=-1)([x, crop])
+# and convolve
+x = SeparableConv2D(filters=2, kernel_size=3)(x)
+x = LeakyReLU(alpha=relu_rate)(x)
+x = SeparableConv2D(filters=1, kernel_size=3)(x)
+x = LeakyReLU(alpha=relu_rate)(x)
+print('zoom1', x)
 
 left_pad = (513 - x.shape[1]) // 2
 right_pad = 513 - x.shape[1] - left_pad
@@ -124,8 +202,13 @@ right_pad = int(right_pad)
 up_pad = int(up_pad)
 down_pad = int(down_pad)
 
+# pad so that it matches the ground truth acapella
 main_output = ZeroPadding2D(((left_pad, right_pad), (up_pad, down_pad)))(x)
+print('output', main_output)
 model = Model(inputs=main_input, outputs=main_output)
+plot_model(model, 'model.png')
+print_summary(model)
+
 
 def get_lrate(epoch, lr):
     ''' learning rate
@@ -134,13 +217,17 @@ def get_lrate(epoch, lr):
     lrate = lr * math.pow(drop, 
         math.floor((1+epoch)/epochs_drop))
     '''
-    lrate = min(.1, 5/(epoch+1))
-    return lrate
+    # try jumping out of local min shall there exists
+    # if random.random() < .1:
+    #     return lr * 2
+    return min(.01, .5/(epoch**1.25+1))
 
-lr = LearningRateScheduler(get_lrate)
-model.compile(optimizer=RMSprop(lr=.1), loss='mse')
+lr = LearningRateScheduler(get_lrate, verbose=0)
+# model.compile(optimizer=RMSprop(lr=.001), loss='mae')
+model.compile(optimizer=Adam(lr=.01), loss='mse')
+# model.compile(optimizer='adam', loss='mse')
 
-stoppu = EarlyStopping(min_delta=1e-8, patience=5)
+stoppu = EarlyStopping(min_delta=1e-8, patience=5, verbose=1, mode='min')
 btfu = ModelCheckpoint('vox.hdf5', save_best_only=False, period=1)
 
 # %% run.
@@ -148,7 +235,8 @@ data_dir = '/home/tran.ngo.quang.ngoc/Downloads/MIR-1K_for_MIREX/Wavfile/'
 sample_rate, fmat = wavread(data_dir+'abjones_1_01.wav')
 master = fmat[:,0] * .5 + fmat[:,1] * .5
 vocal = fmat[:,1]
+
 master_pow, master_phase = pcm2stft(master)
 vocal_pow, vocal_phase = pcm2stft(vocal)
 model.fit(master_pow[np.newaxis,:,:stft_len], vocal_pow[np.newaxis,:,:stft_len],
-        epochs=100000, batch_size=1, callbacks=[lr, stoppu, btfu])
+        epochs=2000, batch_size=1, callbacks=[stoppu, btfu, lr])
