@@ -3,7 +3,7 @@ logging.getLogger("tensorflow").setLevel(logging.ERROR)
 warnings.filterwarnings('ignore')
 
 from keras.models import load_model
-from scipy.io.wavfile import read as wavread
+from scipy.io.wavfile import read as wavread_orig
 from scipy.io.wavfile import write as wavwrite
 from scipy.signal import stft, istft
 import math
@@ -13,7 +13,7 @@ blocksize = 1024
 overlap = 768  # 3/4
 sample_rate = 44100
 
-def pcm2stft(pcm: wavread) -> {np.ndarray: 'powers', np.ndarray: 'phases'}:
+def pcm2stft(pcm: 'wavread') -> {np.ndarray: 'powers', np.ndarray: 'phases'}:
     '''
     takes in a wavfile in matrix form,
     returns power and phase matrices.
@@ -38,7 +38,7 @@ def pcm2stft(pcm: wavread) -> {np.ndarray: 'powers', np.ndarray: 'phases'}:
         phases.append(np.angle(stft_temp))
     return np.dstack(powers), np.dstack(phases)
 
-def stft2pcm(powers: np.ndarray, phases: np.ndarray) -> wavread:
+def stft2pcm(powers: np.ndarray, phases: np.ndarray) -> 'wavread':
     '''
     takes in the magnitude and angle matrices,
     return the wavfile in matrix form.
@@ -52,6 +52,13 @@ def stft2pcm(powers: np.ndarray, phases: np.ndarray) -> wavread:
         acc.append(istft_help(powers[:,:,i] * np.exp(1j * phases[:,:,i])))
     return np.vstack(acc).T
 
+def wavread(fname):
+    rate, data = wavread_orig(fname)
+    if data.dtype != np.float32:
+        data = data / (np.iinfo(data.dtype).max + 1)
+    # don't go vanishing on me
+    return rate, data * 2**10
+
 model = load_model('vox.hdf5')
 
 data_dir = '/home/tran.ngo.quang.ngoc/Downloads/MIR-1K_for_MIREX/Wavfile/'
@@ -61,10 +68,13 @@ sample_rate, fmat = wavread(data_dir+'abjones_1_01.wav')
 master = fmat[:,0] * .5 + fmat[:,1] * .5
 vocal = fmat[:,1]
 master_pow, master_phase = pcm2stft(master)
+vocal_pow, vocal_phase = pcm2stft(vocal)
 
 predicted = model.predict(master_pow[np.newaxis,:,:513,:])
-audio_out = stft2pcm(predicted[0,:,:,:], master_phase[:,:predicted.shape[2],:])
+audio_out = stft2pcm(predicted[0,:,:,:], master_phase[100:-101,100:513-101,:])
+print(np.max(master),np.max(vocal))
 print(np.max(audio_out))
+
 wavwrite('eval/output.wav', sample_rate, audio_out/np.max(audio_out))
 wavwrite('eval/mixed.wav', sample_rate, master/np.max(master))
 wavwrite('eval/vocal.wav', sample_rate, vocal/np.max(vocal))
