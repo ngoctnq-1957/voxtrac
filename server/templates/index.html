@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>voxtrac - vocal extractor</title>
+</head>
+<body>
+    Upload music from which to extract vocal. Max file size 50Mb.
+    <br>
+    <form action = "/vocal" method = "POST" 
+	enctype = "multipart/form-data">
+	<input type = "file" name = "file" />
+    <input type = "submit"/>
+    
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <br>
+            {% for message in messages %}
+                {{ message }}
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+</form>
+</body>
+</html>

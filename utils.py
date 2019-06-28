@@ -1,57 +1,58 @@
 import numpy as np
-import os
-from scipy.io.wavfile import read as wavread
-from scipy.io.wavfile import write as wavwrite
+from scipy.io.wavfile import read as wavread_orig
 from scipy.signal import stft, istft
+import math
 
-#== HYPERPARAMETERS ==#
-SEG_CONST = 512
-
-#== DEFAULT VALUES ==#
+# Constants
+blocksize = 1024
+overlap = 768  # 3/4
 sample_rate = 44100
 
-#== TEST VARIABLES ==#
-mat_before = None
-mat_after = None
+# conversions between PCM and STFT
+stft_params = {'window':'hann', 'nperseg':blocksize,
+        'noverlap':overlap, 'nfft':blocksize}
+def pcm2stft(pcm: 'wavread') -> {np.ndarray: 'powers', np.ndarray: 'phases'}:
+    '''
+    takes in a wavfile in matrix form,
+    returns power and phase matrices.
+    '''
+    def stft_help(data):
+        _, _, zxx = stft(data, return_onesided=True,
+                         padded=False, axis=-1, **stft_params)
+        return zxx
 
-def load_audio(audio_path):
-    global sample_rate
-    sample_rate, data = wavread(audio_path)
+    # manual pad the pcm
+    if len(pcm.shape) == 1:
+        pcm = pcm[:,np.newaxis]
+    pad_size = math.ceil(pcm.shape[0]/256)*256 - pcm.shape[0]
+    pcm = np.pad(pcm, ((pad_size//2, pad_size-pad_size//2), (0,0)), 'reflect')
 
-    # why normalize?
-    # data /= (2 ** 10)
+    # start processing
+    powers = []
+    phases = []
+    for i in range(pcm.shape[1]):
+        stft_temp = stft_help(pcm[:,i])
+        # using magnitudes and angles
+        powers.append(np.abs(stft_temp))
+        phases.append(np.angle(stft_temp))
+    return np.dstack(powers), np.dstack(phases)
 
-    channels = []
+def stft2pcm(powers: np.ndarray, phases: np.ndarray) -> 'wavread':
+    '''
+    takes in the magnitude and angle matrices,
+    return the wavfile in matrix form.
+    '''
+    def istft_help(data):
+        _, zxx = istft(data, input_onesided=True, **stft_params)
+        return zxx
+    acc = []
+    for i in range(powers.shape[2]):
+        acc.append(istft_help(powers[:,:,i] * np.exp(1j * phases[:,:,i])))
+    return np.vstack(acc).T
 
-    global mat_before
-    mat_before = data
-    
-    for i in range(data.shape[1]):
-        freqs, bins, sxx = stft(data[:,i], nperseg=SEG_CONST, fs=sample_rate)
-        real_part = np.real(sxx)
-        real_part = np.expand_dims(real_part, axis=-1)
-        complex_part = np.imag(sxx)
-        complex_part = np.expand_dims(complex_part, axis=-1)
-        channels.append(np.concatenate((real_part, complex_part), axis=-1)[:,:,:,np.newaxis])
-
-    ret = np.concatenate(channels, axis=-1)
-    return ret
-
-def save_audio(data, audio_path):
-    channels = []
-    for i in range(data.shape[-1]):
-        # data *= (2 ** 10)
-        audio = data[:, :, 0, i] + data[:, :, 1, i] * 1j
-        _, x = istft(np.abs(audio) * np.exp(1j * np.angle(audio)), fs=sample_rate, nperseg=SEG_CONST)
-        # x = x.astype(np.int16)
-        channels.append(np.expand_dims(x, axis=-1))
-
-    ret = np.concatenate(channels, axis=-1)
-    wavwrite(audio_path, sample_rate, ret)
-    return ret
-
-if __name__ == "__main__":
-    data = load_audio('load.wav')
-    ret = save_audio(data, 'save.wav')
-
-    print(np.linalg.norm(ret-mat_before))
+def wavread(fname):
+    rate, data = wavread_orig(fname)
+    if data.dtype not in [np.float32, np.float64]:
+        data = data / (np.iinfo(data.dtype).max + 1)
+    # don't go vanishing on me
+    return rate, data.astype(np.float32) * 1024
